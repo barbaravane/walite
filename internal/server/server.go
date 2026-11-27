@@ -135,10 +135,34 @@ func NewServer(cfg Config) (*Server, error) {
 				}
 				var partID uint32
 				if n, _ := fmt.Sscanf(partEntry.Name(), "partition-%d", &partID); n == 1 {
-					if _, err := srv.getOrCreatePartition(topicName, partID); err != nil {
+					flushPolicy := log.SyncNone
+					if srv.cfg.SyncAlways {
+						flushPolicy = log.SyncAlways
+					} else if srv.cfg.FlushInterval > 0 {
+						flushPolicy = log.SyncInterval
+					}
+
+					partDir := filepath.Join(topicsDir, topicName, fmt.Sprintf("partition-%d", partID))
+					partCfg := log.PartitionConfig{
+						Directory:          partDir,
+						MaxSegmentBytes:    srv.cfg.MaxSegmentBytes,
+						IndexIntervalBytes: srv.cfg.IndexIntervalBytes,
+						Flush: log.FlusherConfig{
+							Policy:   flushPolicy,
+							Interval: srv.cfg.FlushInterval,
+						},
+					}
+
+					part, err := log.OpenPartition(partCfg)
+					if err != nil {
 						_ = srv.Close()
 						return nil, fmt.Errorf("failed to recover partition %s-%d: %w", topicName, partID, err)
 					}
+
+					if _, exists := srv.partitions[topicName]; !exists {
+						srv.partitions[topicName] = make(map[uint32]*log.Partition)
+					}
+					srv.partitions[topicName][partID] = part
 				}
 			}
 		}
