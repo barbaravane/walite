@@ -39,7 +39,7 @@ func DefaultConfig() Config {
 		SyncAlways:          false,
 		ReadTimeout:         30 * time.Second,
 		WriteTimeout:        30 * time.Second,
-		OffsetRetentionAge:  24 * time.Hour,
+		OffsetRetentionAge:  0,
 		OffsetCleanInterval: 10 * time.Minute,
 	}
 }
