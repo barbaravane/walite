@@ -567,6 +567,12 @@ func (s *Server) handleConsume(conn net.Conn, payload []byte) error {
 				})
 				return s.writeResponse(conn, protocol.OpConsumeResp, resp)
 			}
+			if errors.Is(readErr, log.ErrCorruptRecord) {
+				resp := protocol.EncodeConsumeResp(protocol.ConsumeResp{
+					Status: protocol.StatusErrCorruptRecord,
+				})
+				return s.writeResponse(conn, protocol.OpConsumeResp, resp)
+			}
 			if errors.Is(readErr, log.ErrOffsetOutOfRange) || errors.Is(readErr, io.EOF) {
 				break
 			}
