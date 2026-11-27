@@ -55,6 +55,7 @@ const (
 	StatusErrCorruptRecord     uint16 = 0x0005
 	StatusErrServerClosed      uint16 = 0x0006
 	StatusErrInvalidPayload    uint16 = 0x0007
+	StatusErrOffsetNotFound    uint16 = 0x0008
 )
 
 var (

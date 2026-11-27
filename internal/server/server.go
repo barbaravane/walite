@@ -637,7 +637,7 @@ func (s *Server) handleOffsetGet(conn net.Conn, payload []byte) error {
 	if getErr != nil {
 		if errors.Is(getErr, consumer.ErrOffsetNotFound) {
 			resp := protocol.EncodeOffsetResp(protocol.OffsetResp{
-				Status: protocol.StatusErrOffsetOutOfRange,
+				Status: protocol.StatusErrOffsetNotFound,
 				Offset: 0,
 			})
 			return s.writeResponse(conn, protocol.OpOffsetResp, resp)
