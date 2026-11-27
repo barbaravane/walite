@@ -42,6 +42,30 @@ import (
 // ErrServerClosed is returned when an operation is attempted on a stopped server.
 var ErrServerClosed = errors.New("walite: server closed")
 
+// ErrInvalidTopic is returned when a topic name contains illegal characters or path traversal components.
+var ErrInvalidTopic = errors.New("walite: invalid topic name")
+
+func validateTopic(topic string) error {
+	if topic == "" {
+		return ErrInvalidTopic
+	}
+	if topic == "." || topic == ".." {
+		return ErrInvalidTopic
+	}
+	for i := 0; i < len(topic); i++ {
+		c := topic[i]
+		if c == '/' || c == '\\' || c < 32 || c == 127 {
+			return ErrInvalidTopic
+		}
+	}
+	// Disallow path traversal components
+	cleaned := filepath.Clean(topic)
+	if cleaned != topic || cleaned == "." || cleaned == ".." || filepath.IsAbs(cleaned) {
+		return ErrInvalidTopic
+	}
+	return nil
+}
+
 // Server encapsulates the walited network engine, managing partitions and client connections.
 type Server struct {
 	cfg        Config
@@ -290,6 +314,9 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 func (s *Server) getOrCreatePartition(topic string, partitionID uint32) (*log.Partition, error) {
+	if err := validateTopic(topic); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
@@ -346,6 +373,9 @@ func (s *Server) getOrCreatePartition(topic string, partitionID uint32) (*log.Pa
 }
 
 func (s *Server) getPartition(topic string, partitionID uint32) *log.Partition {
+	if err := validateTopic(topic); err != nil {
+		return nil
+	}
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
@@ -370,6 +400,9 @@ func (s *Server) getPartition(topic string, partitionID uint32) *log.Partition {
 }
 
 func (s *Server) topicExists(topic string) bool {
+	if err := validateTopic(topic); err != nil {
+		return false
+	}
 	s.mu.RLock()
 	if parts, ok := s.partitions[topic]; ok && len(parts) > 0 {
 		s.mu.RUnlock()
@@ -395,6 +428,13 @@ func (s *Server) writeResponse(conn net.Conn, opCode uint8, payload []byte) erro
 func (s *Server) handleProduce(conn net.Conn, payload []byte) error {
 	req, err := protocol.DecodeProduceReq(payload)
 	if err != nil {
+		resp := protocol.EncodeProduceResp(protocol.ProduceResp{
+			Status: protocol.StatusErrInvalidPayload,
+		})
+		return s.writeResponse(conn, protocol.OpProduceResp, resp)
+	}
+
+	if err := validateTopic(req.Topic); err != nil {
 		resp := protocol.EncodeProduceResp(protocol.ProduceResp{
 			Status: protocol.StatusErrInvalidPayload,
 		})
@@ -460,6 +500,13 @@ func (s *Server) handleProduce(conn net.Conn, payload []byte) error {
 func (s *Server) handleConsume(conn net.Conn, payload []byte) error {
 	req, err := protocol.DecodeConsumeReq(payload)
 	if err != nil {
+		resp := protocol.EncodeConsumeResp(protocol.ConsumeResp{
+			Status: protocol.StatusErrInvalidPayload,
+		})
+		return s.writeResponse(conn, protocol.OpConsumeResp, resp)
+	}
+
+	if err := validateTopic(req.Topic); err != nil {
 		resp := protocol.EncodeConsumeResp(protocol.ConsumeResp{
 			Status: protocol.StatusErrInvalidPayload,
 		})
@@ -563,6 +610,13 @@ func (s *Server) handleOffsetGet(conn net.Conn, payload []byte) error {
 		return s.writeResponse(conn, protocol.OpOffsetResp, resp)
 	}
 
+	if err := validateTopic(req.Topic); err != nil {
+		resp := protocol.EncodeOffsetResp(protocol.OffsetResp{
+			Status: protocol.StatusErrInvalidPayload,
+		})
+		return s.writeResponse(conn, protocol.OpOffsetResp, resp)
+	}
+
 	s.mu.RLock()
 	closed := s.closed
 	s.mu.RUnlock()
@@ -602,6 +656,13 @@ func (s *Server) handleOffsetGet(conn net.Conn, payload []byte) error {
 func (s *Server) handleOffsetCommit(conn net.Conn, payload []byte) error {
 	req, err := protocol.DecodeCommitReq(payload)
 	if err != nil {
+		resp := protocol.EncodeCommitResp(protocol.CommitResp{
+			Status: protocol.StatusErrInvalidPayload,
+		})
+		return s.writeResponse(conn, protocol.OpCommitResp, resp)
+	}
+
+	if err := validateTopic(req.Topic); err != nil {
 		resp := protocol.EncodeCommitResp(protocol.CommitResp{
 			Status: protocol.StatusErrInvalidPayload,
 		})
