@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -925,5 +926,153 @@ func TestServer_OffsetManagerCleanerConfigured(t *testing.T) {
 	}
 	if part.Cleaner().Config().CleanInterval != 15*time.Minute {
 		t.Fatalf("expected Cleaner Config CleanInterval 15m, got %v", part.Cleaner().Config().CleanInterval)
+	}
+}
+
+func TestServer_RejectPathTraversalTopics(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	invalidTopics := []string{"../foo", "../../etc/passwd", "..", ".", "foo/bar", "foo\\bar", ""}
+	for _, topic := range invalidTopics {
+		// Test produce
+		produceReq := protocol.ProduceReq{
+			Topic:       topic,
+			PartitionID: 0,
+			Records: []*log.Record{
+				{
+					Timestamp: time.Now().UnixNano(),
+					Key:       []byte("k"),
+					Value:     []byte("v"),
+				},
+			},
+		}
+		if err := protocol.WriteFrame(conn, protocol.OpProduceReq, protocol.EncodeProduceReq(produceReq)); err != nil {
+			t.Fatalf("failed to write produce frame: %v", err)
+		}
+		frame, err := protocol.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("failed to read produce resp frame: %v", err)
+		}
+		produceResp, err := protocol.DecodeProduceResp(frame.Payload)
+		if err != nil {
+			t.Fatalf("failed to decode produce resp: %v", err)
+		}
+		if produceResp.Status != protocol.StatusErrInvalidPayload {
+			t.Fatalf("expected StatusErrInvalidPayload for topic %q, got 0x%04x", topic, produceResp.Status)
+		}
+
+		// Test consume
+		consumeReq := protocol.ConsumeReq{
+			Topic:       topic,
+			PartitionID: 0,
+			Offset:      0,
+			MaxBytes:    1024,
+		}
+		if err := protocol.WriteFrame(conn, protocol.OpConsumeReq, protocol.EncodeConsumeReq(consumeReq)); err != nil {
+			t.Fatalf("failed to write consume frame: %v", err)
+		}
+		frame, err = protocol.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("failed to read consume resp frame: %v", err)
+		}
+		consumeResp, err := protocol.DecodeConsumeResp(frame.Payload)
+		if err != nil {
+			t.Fatalf("failed to decode consume resp: %v", err)
+		}
+		if consumeResp.Status != protocol.StatusErrInvalidPayload {
+			t.Fatalf("expected StatusErrInvalidPayload for topic %q, got 0x%04x", topic, consumeResp.Status)
+		}
+	}
+}
+
+func TestServer_ConsumeCorruptRecordReturnsStatusErrCorruptRecord(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	topic := "corrupt-test"
+	produceReq := protocol.ProduceReq{
+		Topic:       topic,
+		PartitionID: 0,
+		Records: []*log.Record{
+			{
+				Timestamp: time.Now().UnixNano(),
+				Key:       []byte("valid-key"),
+				Value:     []byte("valid-val"),
+			},
+		},
+	}
+	if err := protocol.WriteFrame(conn, protocol.OpProduceReq, protocol.EncodeProduceReq(produceReq)); err != nil {
+		t.Fatalf("failed to write produce: %v", err)
+	}
+	frame, err := protocol.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("failed to read produce resp: %v", err)
+	}
+	pResp, err := protocol.DecodeProduceResp(frame.Payload)
+	if err != nil || pResp.Status != protocol.StatusOK {
+		t.Fatalf("produce failed: %v, status: 0x%04x", err, pResp.Status)
+	}
+
+	// Corrupt the record payload bytes in the active log segment file
+	partDir := filepath.Join(srv.cfg.DataDir, "topics", topic, "partition-0")
+	entries, err := os.ReadDir(partDir)
+	if err != nil {
+		t.Fatalf("failed to read partition dir: %v", err)
+	}
+	var logFile string
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".log" {
+			logFile = filepath.Join(partDir, entry.Name())
+			break
+		}
+	}
+	if logFile == "" {
+		t.Fatalf("log file not found in %s", partDir)
+	}
+
+	f, err := os.OpenFile(logFile, os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("failed to open log file: %v", err)
+	}
+	// Overwrite payload bytes (offset 28 onward) to invalidate CRC
+	if _, err := f.WriteAt([]byte("CORRUPT_PAYLOAD_BYTES"), log.HeaderSize); err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to corrupt record payload: %v", err)
+	}
+	_ = f.Close()
+
+	// Consume record - must return StatusErrCorruptRecord
+	consumeReq := protocol.ConsumeReq{
+		Topic:       topic,
+		PartitionID: 0,
+		Offset:      0,
+		MaxBytes:    4096,
+	}
+	if err := protocol.WriteFrame(conn, protocol.OpConsumeReq, protocol.EncodeConsumeReq(consumeReq)); err != nil {
+		t.Fatalf("failed to write consume: %v", err)
+	}
+	frame, err = protocol.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("failed to read consume resp: %v", err)
+	}
+	cResp, err := protocol.DecodeConsumeResp(frame.Payload)
+	if err != nil {
+		t.Fatalf("failed to decode consume resp: %v", err)
+	}
+	if cResp.Status != protocol.StatusErrCorruptRecord {
+		t.Fatalf("expected StatusErrCorruptRecord (0x0005), got 0x%04x", cResp.Status)
 	}
 }
